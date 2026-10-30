@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the two public feed files through Firebase Hosting REST, without the CLI.
+"""Publish the public feed and optional durable history through Firebase Hosting REST.
 
 Protocol: https://firebase.google.com/docs/hosting/api-deploy
 Only a successful final releases.create changes the live site. No retries or redirects.
@@ -23,6 +23,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from market_feed import FeedError, MAX_FEED_BYTES, json_loads
 from verify_public_feed import verify_body
+from history_feed import HISTORY_PATHS, INDEX_PATH, MAX_INDEX_BYTES as MAX_HISTORY_INDEX_BYTES, MAX_SHARD_BYTES, validate_bundle
 
 PROJECT = 'pokeinvest-23904'
 SITE = 'pokeinvest-market-data'
@@ -37,6 +38,7 @@ TIMEOUT_SECONDS = 30
 CONFIG = {'headers': [
     {'glob': '**', 'headers': {'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff'}},
     {'glob': '/feed.json', 'headers': {'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*'}},
+    {'glob': '/history/**/*.json', 'headers': {'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*'}},
 ]}
 
 
@@ -129,9 +131,11 @@ def prepare_public(directory, now):
     if directory.is_symlink() or not directory.is_dir():
         raise DeploymentError('Public directory must be a real directory')
     entries = list(directory.iterdir())
-    if {entry.name for entry in entries} != {'feed.json', 'index.html'} or any(
-            entry.is_symlink() or not entry.is_file() for entry in entries):
-        raise DeploymentError('Public directory must contain only regular feed.json and index.html files')
+    has_history = (directory / 'history').exists()
+    expected = {'feed.json', 'index.html', 'history'} if has_history else {'feed.json', 'index.html'}
+    if {entry.name for entry in entries} != expected or any(
+            entry.is_symlink() or (not entry.is_dir() if entry.name == 'history' else not entry.is_file()) for entry in entries):
+        raise DeploymentError('Public directory contains unexpected files')
     bodies = {}
     for name, limit in [('feed.json', MAX_FEED_BYTES), ('index.html', MAX_INDEX_BYTES)]:
         with (directory / name).open('rb') as handle:
@@ -139,12 +143,28 @@ def prepare_public(directory, now):
         if not body or len(body) > limit:
             raise DeploymentError('A public file is empty or exceeds its size limit')
         bodies['/' + name] = body
+    if has_history:
+        history_entries = list((directory / 'history').iterdir())
+        if {'/history/' + entry.name for entry in history_entries} != HISTORY_PATHS or any(entry.is_symlink() or not entry.is_file() for entry in history_entries):
+            raise DeploymentError('History directory must contain only the complete indexed shards')
+        for entry in history_entries:
+            limit = MAX_HISTORY_INDEX_BYTES if entry.name == 'index.json' else MAX_SHARD_BYTES
+            with entry.open('rb') as handle:
+                body = handle.read(limit + 1)
+            if not body or len(body) > limit:
+                raise DeploymentError('History file is empty or exceeds its size limit')
+            bodies['/history/' + entry.name] = body
     try:
         metadata = verify_body(bodies['/feed.json'], now)
         feed = json_loads(bodies['/feed.json'])
+        row_fields = {'productId', 'subTypeName', 'marketPrice', 'sourcePublishedAt'}
         if set(feed) != {'schemaVersion', 'currency', 'sourceBuildAt', 'generatedAt', 'prices'} or any(
-                set(row) != {'productId', 'subTypeName', 'marketPrice', 'sourcePublishedAt'} for row in feed['prices']):
+                set(row) not in (row_fields, row_fields | {'history'}) for row in feed['prices']):
             raise FeedError('Unexpected fields')
+        if has_history:
+            validate_bundle({path: bodies[path] for path in HISTORY_PATHS}, now, feed)
+        elif any('history' in row for row in feed['prices']):
+            raise FeedError('History summary requires its durable bundle')
         bodies['/index.html'].decode('utf-8')
     except (FeedError, UnicodeError, TypeError, ValueError):
         raise DeploymentError('Public feed contract, freshness, or text validation failed') from None
@@ -191,6 +211,7 @@ def deploy(public_dir, *, environ=None, opener=None, clock=None):
         raise DeploymentError('Release response could not be verified; check Hosting before any further deployment')
     report = {'site': SITE, 'version': name, 'release': release_name, 'files': files,
               'uploadedFiles': len(required), 'prices': metadata['prices'],
+              'historyIncluded': INDEX_PATH in bodies,
               'sourceBuildAt': metadata['sourceBuildAt'], 'feedSha256': metadata['sha256']}
     if client._token in json.dumps(report):
         raise DeploymentError('Unsafe release metadata; output suppressed')

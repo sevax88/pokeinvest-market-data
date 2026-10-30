@@ -218,6 +218,17 @@ def validate_feed(feed: Any, now: datetime) -> dict:
         published = instant(row.get('sourcePublishedAt'))
         if published > now or published > build:
             raise FeedError('Future/inconsistent source file publication date')
+        history = row.get('history')
+        if 'history' in row:
+            if not isinstance(history, dict) or set(history) != {'observedAt', 'days7', 'days30', 'avg7', 'avg30'}:
+                raise FeedError('Invalid optional history summary')
+            observed = instant(history['observedAt'])
+            if not published <= observed <= generated:
+                raise FeedError('Invalid history observation date')
+            for days in (7, 30):
+                count, average = history[f'days{days}'], history[f'avg{days}']
+                if type(count) is not int or not 0 <= count <= days or (count == days and not positive(average)) or (count < days and average is not None):
+                    raise FeedError('Incomplete or invalid history window')
         merge_price(merged, row)
     return feed
 
@@ -247,8 +258,8 @@ def write_public(directory: Path, feed: dict) -> None:
     if len(feed['prices']) > MAX_FEED_ROWS or len(encoded.encode('utf-8')) > MAX_FEED_BYTES:
         raise FeedError('Feed exceeds Android limits (100000 prices / 16 MiB); keeping previous publication')
     directory.mkdir(parents=True, exist_ok=True)
-    # Only these two files belong in the public deployment directory.
-    unexpected = [p.name for p in directory.iterdir() if p.name not in {'feed.json', 'index.html'}]
+    # The history step validates/rebuilds the complete durable bundle before deploy.
+    unexpected = [p.name for p in directory.iterdir() if p.name not in {'feed.json', 'index.html', 'history'} or p.is_symlink()]
     if unexpected:
         raise FeedError('Public directory contains unexpected files; refusing deployment preparation')
     atomic_json(directory / 'feed.json', feed)

@@ -32,6 +32,9 @@ def verify_body(body, now, expected=None):
         'sourcePublishedAtMin': min(stamps), 'sourcePublishedAtMax': max(stamps),
         'subtypes': dict(Counter(row['subTypeName'] for row in feed['prices'])),
         'withinAndroidLimits': len(feed['prices']) <= MAX_FEED_ROWS,
+        'historyPrices': sum('history' in row for row in feed['prices']),
+        'complete7DayHistories': sum(row.get('history', {}).get('days7') == 7 for row in feed['prices']),
+        'complete30DayHistories': sum(row.get('history', {}).get('days30') == 30 for row in feed['prices']),
         'expectedInitialFileMatches': expected is not None,
         'mew46466': [row for row in feed['prices'] if row['productId'] == 46466 and row['subTypeName'] == 'Reverse Holofoil'],
     }

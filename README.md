@@ -1,6 +1,6 @@
 # PokeInvest Market Feed
 
-Repositorio independiente para publicar **sólo datos públicos** de precios Pokémon. Python estándar descarga TCGCSV desde GitHub Actions una vez por día y publica `feed.json` e `index.html` en un sitio dedicado de Firebase Hosting. No contiene la app Android, cuentas, favoritos ni datos de usuarios. No necesita una computadora encendida ni API keys de precios. La configuración sólo incluye Hosting estático y no habilita facturación ni Functions. La viabilidad de la configuración OIDC en el plan actual debe verificarse antes de aprobar un despliegue.
+Repositorio independiente para publicar **sólo datos públicos** de precios Pokémon. Python estándar descarga TCGCSV desde GitHub Actions una vez por día y publica el feed y un historial de observaciones en un sitio dedicado de Firebase Hosting. No contiene la app Android, cuentas, favoritos ni datos de usuarios. No necesita una computadora encendida ni API keys de precios. La configuración sólo incluye Hosting estático y no habilita facturación ni Functions.
 
 Repositorio público: [sevax88/pokeinvest-market-data](https://github.com/sevax88/pokeinvest-market-data). Sitio de precios: [pokeinvest-market-data.web.app](https://pokeinvest-market-data.web.app/). La publicación inicial fue verificada el 30/10/2026: 39.566 precios. El workflow diario usa la identidad temporal de GitHub y publica únicamente en ese sitio dedicado.
 
@@ -31,7 +31,50 @@ El ejemplo procede de la evidencia pública de Mew Southern Islands #1 obtenida 
 - `generatedAt`: momento en que este sincronizador generó el archivo. No equivale a frescura del precio.
 - `sourcePublishedAt`: `Last-Modified` del archivo de precios del grupo. **Es una fecha de publicación del archivo, no la fecha individual del precio ni de la última venta.** Nunca se reemplaza por HTTP `Date`, el momento de descarga, `modifiedOn` del producto o la fecha global.
 - Identidad: clave compuesta `(productId, subTypeName)`. Variantes admitidas: `Normal`, `Holofoil`, `Reverse Holofoil`. No fusionar acabados ni equiparar precio de mercado a oferta disponible.
-- Un cliente debe comprobar fechas, variante y finitud del precio, y rechazar fechas futuras o archivos de más de 72 horas. No usar este feed como historial diario ni inferir rentabilidad.
+- Un cliente debe comprobar fechas, variante y finitud del precio, y rechazar fechas futuras o archivos de más de 72 horas. Una cotización no garantiza una oferta disponible ni rentabilidad.
+
+### Historial compatible con clientes anteriores
+
+`feed.json` conserva `schemaVersion: 1` y sus campos anteriores. Cada precio puede incorporar este objeto opcional, que Android 0.5.3 ignora mediante `ignoreUnknownKeys`:
+
+```json
+"history": {
+  "observedAt": "2026-10-30T15:20:33Z",
+  "days7": 1,
+  "days30": 1,
+  "avg7": null,
+  "avg30": null
+}
+```
+
+`observedAt` es el `generatedAt` real del feed del que se tomó la observación, nunca una fecha individual del precio. Las ventanas terminan en el día UTC de la última observación, incluyen ese día y contienen como máximo una observación por día y clave `(productId, subTypeName)`. `days7`/`days30` cuentan los días presentes. `avg7` y `avg30` son medias aritméticas únicamente cuando existen los 7 o 30 días consecutivos completos; en otro caso son `null`. No se rellenan días ni se mezclan variantes o proveedores. La última observación coincide en precio y `sourcePublishedAt` con la fila actual.
+
+La persistencia durable está en Hosting, junto al feed, y no depende de que sobreviva la caché de Actions:
+
+- `/history/index.json`: `{schemaVersion:2,currency:"USD",retentionDays:35,sourceBuildAt,generatedAt,shardCount:64,shards:[{bucket,path,sha256,bytes}]}`.
+- `/history/00.json` hasta `/history/3f.json`: `{schemaVersion:2,currency:"USD",bucket,series:[{productId,subTypeName,observations:[{observedAt,marketPrice,sourcePublishedAt}]}]}`.
+- El bucket es `productId % 64`, hexadecimal con dos caracteres; `path` incluye `/history/`. El índice registra el SHA256 de los bytes JSON sin comprimir de cada shard, distinto del hash gzip usado para subirlo a Hosting.
+- Se conservan los 35 días calendario terminados en el día de la última generación exitosa. Una nueva build en el mismo día UTC reemplaza la observación de ese día. La misma build conserva los bytes y las fechas del historial; no crea días nuevos. Los productos ausentes se conservan hasta vencer la retención.
+- Antes de preparar el siguiente historial se recupera el índice publicado y se verifican todos los shards por tamaño y hash. La caché sólo evita descargar shards idénticos. Una lectura fallida, un hash incorrecto, una fecha regresiva o un índice inválido detienen la publicación completa.
+- Feed, índice y 64 shards se incorporan a una única versión de Hosting. La release sólo cambia cuando todos los archivos están cargados y la versión está finalizada. Hasta ese momento se mantiene la publicación anterior.
+
+### Primer historial, sin descargar TCGCSV otra vez
+
+Para preparar offline el historial inicial desde el `public/feed.json` real ya observado, cuando todavía no hay directorio de historial ni caché de historial:
+
+```sh
+python3 history_feed.py --bootstrap-history
+```
+
+Esto **sólo prepara archivos locales**; conserva el `generatedAt` original y no consulta ninguna red. No permite reconstruir silenciosamente un historial existente. El primer workflow puede ejecutarse manualmente con `bootstrap_history=true`, permitiendo un 404 del índice únicamente en ese arranque explícito; si ya hay una caché de historial, incluso ese 404 aborta. Después se deja el valor predeterminado `false`. Un índice o shard corrupto nunca habilita un reinicio.
+
+La operación normal, posterior al sincronizador de precios, es:
+
+```sh
+python3 history_feed.py --previous-history-url 'https://pokeinvest-market-data.web.app/history/index.json'
+```
+
+Al recuperar un runner sin caché se descargan el índice y sus 64 shards de Hosting, con gzip y límites de tamaño, antes de agregar la observación nueva. Nunca se consultan fuentes históricas ni se reconstruyen días que no observamos.
 
 ## Probar sin red
 
@@ -41,7 +84,7 @@ Python 3.11 o superior; no instalar paquetes Python:
 python3 -m unittest discover -s tests -v
 ```
 
-Se prueban respuestas reales guardadas, identificación de singles, cancelación completa ante una falla de grupo, duplicados conflictivos, fechas ausentes/futuras/antiguas, 304, reanudación desde feed previo, control de solicitudes y destino de Hosting. Todas las llamadas HTTP de tests están simuladas.
+Se prueban respuestas reales guardadas, identificación de singles, cancelación completa ante una falla de grupo, duplicados conflictivos, fechas ausentes/futuras/antiguas, 304, reanudación desde feed previo, control de solicitudes y destino de Hosting. El historial prueba retención, días faltantes, ventanas completas, variantes, doble build del día, rollback, recuperación sin caché, corrupción y compatibilidad del feed. Todas las llamadas HTTP de tests están simuladas.
 
 ## Primera sincronización local autorizada
 
@@ -74,9 +117,9 @@ Configurar estas **variables** del repositorio o del environment `production-fee
 
 La persona administradora configura el sitio dedicado y la confianza OIDC por separado. La confianza debe restringirse al repositorio y rama aprobados; no a cualquier workflow de GitHub. Dar a la identidad sólo los permisos necesarios para desplegar el sitio previsto, sin Owner/Editor. Este repositorio no crea IAM ni sitios. No se requiere guardar una clave JSON ni un `FIREBASE_TOKEN`.
 
-El workflow tiene `contents: read` e `id-token: write` y acciones fijadas por SHA. Obtiene un token temporal de 10 minutos justo antes de publicar, sin claves persistentes ni archivos de credenciales. `deploy_hosting.py` usa directamente la API de Hosting con el rol Hosting Admin: comprime los dos archivos, verifica sus hashes, carga los archivos pendientes y sólo publica tras finalizar correctamente la versión. No requiere permisos de administración de servicios, Auth ni Firestore. El rol Hosting Admin abarca los sitios del proyecto; el publicador limita su destino a `pokeinvest-market-data`. `firebase.json` conserva la configuración pública y `configure_hosting.py` valida las cuatro variables antes de cualquier descarga.
+El workflow tiene `contents: read` e `id-token: write` y acciones fijadas por SHA. Obtiene un token temporal de 10 minutos justo antes de publicar, sin claves persistentes ni archivos de credenciales. `deploy_hosting.py` usa directamente la API de Hosting con el rol Hosting Admin: valida el conjunto completo de 67 archivos, comprime, verifica hashes, carga los archivos pendientes y sólo publica tras finalizar correctamente la versión. No requiere permisos de administración de servicios, Auth ni Firestore. El rol Hosting Admin abarca los sitios del proyecto; el publicador limita su destino a `pokeinvest-market-data`. `configure_hosting.py` valida las cuatro variables antes de cualquier descarga.
 
-La caché de Actions guarda exclusivamente estado de fuentes públicas: build intentado/exitoso, feed previo, cabeceras de fuentes e IDs de productos/singles. Nunca se cachean credenciales, el directorio entero ni los datos de la app. No se realizan commits de precios. El feed y su página se publican desde un directorio que sólo admite esos dos archivos.
+La caché de Actions guarda exclusivamente estado de fuentes públicas: build intentado/exitoso, feed previo, cabeceras de fuentes, IDs de productos/singles y shards verificados del historial publicado. Nunca se cachean credenciales, el directorio entero ni los datos de la app. No se realizan commits de precios. El directorio público sólo permite feed, página, índice y los 64 shards previstos; archivos extra o symlinks impiden desplegar.
 
 ## Descargas, fallas y frescura
 
@@ -90,9 +133,9 @@ La caché de Actions guarda exclusivamente estado de fuentes públicas: build in
 
 Un build fallido queda marcado para evitar repetir descargas de esa misma versión. La siguiente versión permite un nuevo intento. No borrar el estado ni disparar reintentos masivos para ocultar una falla. Revisar el error y mantener la última publicación; el cliente debe mostrar la antigüedad real.
 
-En un catálogo de 220 grupos, la primera sincronización necesita como máximo unas 442 solicitudes (marcador, grupos, precios y productos). Las siguientes suelen necesitar menos gracias al catálogo y solicitudes condicionales. Hay un límite preventivo de 1000 solicitudes por ejecución y 20 minutos por workflow. La salida se limita a 100.000 precios y 16 MiB para respetar los límites del cliente Android; excederlos aborta y conserva la publicación anterior. No se descargan archivos históricos.
+En un catálogo de 220 grupos, la primera sincronización necesita como máximo unas 442 solicitudes (marcador, grupos, precios y productos). Las siguientes suelen necesitar menos gracias al catálogo y solicitudes condicionales. Hay un límite preventivo de 1000 solicitudes por ejecución y 20 minutos por workflow. El feed, incluidos sus resúmenes históricos, se limita a 100.000 precios y 16 MiB; cada shard admite hasta 8 MiB y el historial hasta 100.000 series. Exceder un límite aborta y conserva la publicación anterior. El bootstrap real de 39.566 precios prepara un feed de 8.062.152 bytes y 6.531.576 bytes de historial sin comprimir, con un día observado y medias aún vacías. La proyección de 35 observaciones por serie con el catálogo y formato numérico actuales suma 141.240.918 bytes: el mayor shard tendría 2.356.177 bytes, frente al límite de 8.388.608. Es una estimación de capacidad, no datos históricos inventados ni garantía ante crecimiento futuro del catálogo.
 
-GitHub puede demorar trabajos programados y suspenderlos tras 60 días de inactividad en repositorios públicos: revisar Actions y reactivarlos si corresponde. La caché de Actions puede ser eliminada; el feed previo público evita volver a descargar una versión ya publicada, pero no reemplaza un almacenamiento durable de fallos aún no publicados. Firebase Hosting queda sujeto a las cuotas del proyecto; esta configuración no habilita facturación ni cambia el plan.
+GitHub puede demorar trabajos programados y suspenderlos tras 60 días de inactividad en repositorios públicos: revisar Actions y reactivarlos si corresponde. La caché de Actions puede ser eliminada; feed e historial públicos permiten recuperar la publicación, pero no reemplazan almacenamiento durable de intentos fallidos todavía no publicados. Firebase Hosting queda sujeto a las cuotas del proyecto; esta configuración no habilita facturación ni cambia el plan. La retención de 35 días limita el contenido activo del historial, **no elimina las versiones antiguas de Hosting**. Revisar almacenamiento y política de retención de releases por separado; este código no borra releases ni amplía permisos.
 
 ## Fuentes oficiales y pines
 
