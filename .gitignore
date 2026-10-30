@@ -1,0 +1,10 @@
+.state/
+public/
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.firebase/
+firebase-debug.log*
+gha-creds-*.json
+.audit/

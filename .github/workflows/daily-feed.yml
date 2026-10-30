@@ -1,0 +1,92 @@
+name: Daily Pokemon market feed
+
+on:
+  schedule:
+    - cron: '45 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pokemon-market-feed
+  cancel-in-progress: false
+
+jobs:
+  update-and-publish:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production-feed
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      FIREBASE_PROJECT: ${{ vars.FIREBASE_PROJECT }}
+      FIREBASE_SITE: ${{ vars.FIREBASE_SITE }}
+      WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+      WIF_SERVICE_ACCOUNT: ${{ vars.WIF_SERVICE_ACCOUNT }}
+    steps:
+      - name: Checkout the independent data-only repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Validate deployment destination
+        run: python3 configure_hosting.py
+      - name: Run offline tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Restore public-source sync state
+        id: restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .state
+          key: market-feed-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            market-feed-state-v1-
+      - name: Synchronize once per source build
+        id: sync
+        run: python3 market_feed.py --previous-feed-url "https://${FIREBASE_SITE}.web.app/feed.json"
+      - name: Preserve the last good feed and attempted-build marker
+        if: always() && hashFiles('.state/state.json') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .state
+          key: market-feed-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Set up Node for the fixed Firebase CLI
+        if: success() && steps.sync.outputs.ready == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install Firebase CLI
+        if: success() && steps.sync.outputs.ready == 'true'
+        run: npm install --prefix "$RUNNER_TEMP/firebase-cli" --no-audit --no-fund --ignore-scripts firebase-tools@15.34.1
+      # Authenticate only after the downloads/install, immediately before deployment.
+      - name: Obtain temporary Firebase deployment credentials
+        if: success() && steps.sync.outputs.ready == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.FIREBASE_PROJECT }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          cleanup_credentials: true
+          export_environment_variables: true
+      - name: Publish only the dedicated feed site
+        if: success() && steps.sync.outputs.ready == 'true'
+        run: '"$RUNNER_TEMP/firebase-cli/node_modules/.bin/firebase" deploy --project "$FIREBASE_PROJECT" --config firebase.json --only hosting --non-interactive'
+      - name: Record summary
+        if: success() && steps.sync.outputs.ready == 'true'
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads(Path('.state/last-report.json').read_text())
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write(f"Feed published: {report['prices']} prices. Source build: {report['sourceBuildAt']}.\n\n")
+              output.write('Dates describe source files, not the last sale or individual price update.\n')
+          PY
