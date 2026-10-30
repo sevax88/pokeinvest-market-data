@@ -2,7 +2,7 @@
 
 Repositorio independiente para publicar **sólo datos públicos** de precios Pokémon. Python estándar descarga TCGCSV desde GitHub Actions una vez por día y publica `feed.json` e `index.html` en un sitio dedicado de Firebase Hosting. No contiene la app Android, cuentas, favoritos ni datos de usuarios. No necesita una computadora encendida ni API keys de precios. La configuración sólo incluye Hosting estático y no habilita facturación ni Functions. La viabilidad de la configuración OIDC en el plan actual debe verificarse antes de aprobar un despliegue.
 
-Este directorio es el contenido completo que debe llevarse al repositorio independiente. El workflow aún requiere que se cree/autorice ese repositorio, un sitio de Hosting dedicado y la identidad temporal correspondiente. No se ha creado ni desplegado nada desde este paquete.
+Repositorio público: [sevax88/pokeinvest-market-data](https://github.com/sevax88/pokeinvest-market-data). Sitio de precios: [pokeinvest-market-data.web.app](https://pokeinvest-market-data.web.app/). La publicación inicial fue verificada el 30/10/2026: 39.566 precios. El workflow diario usa la identidad temporal de GitHub y publica únicamente en ese sitio dedicado.
 
 ## Contrato público
 
@@ -74,7 +74,7 @@ Configurar estas **variables** del repositorio o del environment `production-fee
 
 La persona administradora configura el sitio dedicado y la confianza OIDC por separado. La confianza debe restringirse al repositorio y rama aprobados; no a cualquier workflow de GitHub. Dar a la identidad sólo los permisos necesarios para desplegar el sitio previsto, sin Owner/Editor. Este repositorio no crea IAM ni sitios. No se requiere guardar una clave JSON ni un `FIREBASE_TOKEN`.
 
-El workflow tiene `contents: read` e `id-token: write`, usa acciones fijadas por SHA, instala **firebase-tools 15.34.1** y autentica justo antes de desplegar mediante credenciales efímeras que la acción elimina. Sólo despliega Hosting, desde `public/`; la configuración rechaza el proyecto equivocado o el sitio predeterminado de la app. `firebase.json` trae un marcador inválido hasta que `configure_hosting.py` lo resuelve a partir de variables validadas.
+El workflow tiene `contents: read` e `id-token: write` y acciones fijadas por SHA. Obtiene un token temporal de 10 minutos justo antes de publicar, sin claves persistentes ni archivos de credenciales. `deploy_hosting.py` usa directamente la API de Hosting con el rol Hosting Admin: comprime los dos archivos, verifica sus hashes, carga los archivos pendientes y sólo publica tras finalizar correctamente la versión. No requiere permisos de administración de servicios, Auth ni Firestore. El rol Hosting Admin abarca los sitios del proyecto; el publicador limita su destino a `pokeinvest-market-data`. `firebase.json` conserva la configuración pública y `configure_hosting.py` valida las cuatro variables antes de cualquier descarga.
 
 La caché de Actions guarda exclusivamente estado de fuentes públicas: build intentado/exitoso, feed previo, cabeceras de fuentes e IDs de productos/singles. Nunca se cachean credenciales, el directorio entero ni los datos de la app. No se realizan commits de precios. El feed y su página se publican desde un directorio que sólo admite esos dos archivos.
 
@@ -98,7 +98,7 @@ GitHub puede demorar trabajos programados y suspenderlos tras 60 días de inacti
 
 - [TCGCSV: uso backend, cadencia, User-Agent y límites](https://tcgcsv.com/docs).
 - [Workload Identity Federation para GitHub](https://github.com/google-github-actions/auth).
-- [Firebase CLI en CI](https://firebase.google.com/docs/cli#cli-ci-systems) y [sitios dedicados de Hosting](https://firebase.google.com/docs/hosting/multisites).
+- [Publicación con la API de Hosting](https://firebase.google.com/docs/hosting/api-deploy) y [sitios dedicados de Hosting](https://firebase.google.com/docs/hosting/multisites).
 - [Limitaciones de eventos programados de GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
 Pines comprobados en los repositorios oficiales el 30/10/2026:
@@ -108,5 +108,4 @@ Pines comprobados en los repositorios oficiales el 30/10/2026:
 | actions/checkout | v7.0.1 | [3d3c42e5aac5ba805825da76410c181273ba90b1](https://github.com/actions/checkout/commit/3d3c42e5aac5ba805825da76410c181273ba90b1) |
 | actions/setup-python | v7.1.0 | [6d4fd22b20465ccc0f7354476588e8df7c9ca0e0](https://github.com/actions/setup-python/commit/6d4fd22b20465ccc0f7354476588e8df7c9ca0e0) |
 | actions/cache | v6.1.0 | [55cc8345863c7cc4c66a329aec7e433d2d1c52a9](https://github.com/actions/cache/commit/55cc8345863c7cc4c66a329aec7e433d2d1c52a9) |
-| actions/setup-node | v7.1.0 | [949feb2413d6458794dcd2491c4babbbce0c15c1](https://github.com/actions/setup-node/commit/949feb2413d6458794dcd2491c4babbbce0c15c1) |
 | google-github-actions/auth | v3.0.0 | [7c6bc770dae815cd3e89ee6cdf493a5fab2cc093](https://github.com/google-github-actions/auth/commit/7c6bc770dae815cd3e89ee6cdf493a5fab2cc093) |
