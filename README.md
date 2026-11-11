@@ -123,6 +123,8 @@ La caché de Actions guarda exclusivamente estado de fuentes públicas: build in
 
 ## Descargas, fallas y frescura
 
+Después de publicar, el verificador solicita la revalidación de la URL pública que usa Android y compara los bytes con el archivo de la release. Si recibe otra huella SHA-256, registra ambas y vuelve a consultar. La última lectura ocurre tras 315 segundos de espera acumulada, una vez superados los cinco minutos de caché de Hosting. Al coincidir las huellas comprueba el formato y las fechas en el momento de la lectura. Una diferencia persistente o datos vencidos hacen fallar el control.
+
 1. Consultar primero `last-updated.txt` con un User-Agent propio.
 2. Si la versión coincide con un feed previo validado, reutilizarlo **sin renovar ninguna fecha**. Si alguna fecha de archivo ya supera 72 horas, no republicarlo como actual.
 3. Si cambia, descargar grupos Pokémon (categoría 3) y precios secuencialmente, con al menos 110 ms entre requests, timeout de 20 s y sin retries automáticos.
